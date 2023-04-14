@@ -1,7 +1,13 @@
-use crate::constants::{BASE_64_ENCODING_CHARS, PADDING_CHAR};
-use std::str;
+use std::{fs, str};
+use std::io::{Error, ErrorKind};
+use std::path::PathBuf;
+use std::str::Utf8Error;
+
+use crate::constants::{BASE_64_ENCODING_CHARS, CHARS_BASE_64_ENCODING, PADDING_CHAR};
+use crate::errors::{Base64Error, PaddingError};
 
 mod constants;
+mod errors;
 
 /**
  * The "base64" base encoding specified by <a
@@ -17,15 +23,69 @@ mod constants;
  * Encoded Data. Line feeds may be added using {@link #withSeparator(String, int)}.
  */
 
-pub fn base64_encode(str: String) -> usize {
+pub fn base64_encode(str: String) -> Result<String, Utf8Error> {
     let bytes = str.as_bytes();
-    // base64_encode_bytes(bytes)
-    return 0;
+    let vec = base64_encode_bytes(bytes);
+    let res = str::from_utf8(&vec)?;
+    return Ok(res.to_string());
+}
+
+pub fn base64_decode(str: String) -> Result<String, Base64Error> {
+    let bytes = str.as_bytes();
+    let decoded_result = base64_decode_bytes(bytes);
+    match decoded_result {
+        Ok(decoded) => {
+            match str::from_utf8(&decoded) {
+                Ok(s) => { Ok(s.to_string()) }
+                Err(error) => {
+                    Err(Base64Error { msg: "UTF8 encoding failed".to_string(), utf8_error: Some(error) })
+                }
+            }
+        }
+        Err(_) => {
+            Err(Base64Error { msg: "Decoding failed".to_string(), utf8_error: None })
+        }
+    }
+}
+
+pub fn base64_encode_file_str(path_str: &str) -> Result<Vec<u8>, Error> {
+    let path = PathBuf::from(path_str);
+    base64_encode_file(path)
+}
+
+pub fn base64_encode_file(path: PathBuf) -> Result<Vec<u8>, Error> {
+    let data = fs::read(path)?;
+    let encoded = base64_encode_bytes(&data);
+    Ok(encoded)
+}
+
+pub fn base64_encode_to_file(path: PathBuf, target_path: PathBuf) -> Result<usize, Error> {
+    let res = base64_encode_file(path)?;
+    let len = res.len();
+    fs::write(target_path, res)?;
+    Ok(len)
+}
+
+pub fn base64_decode_from_file(source_path: PathBuf, target_path: PathBuf) -> Result<usize, Error> {
+    let data = fs::read(source_path)?;
+    let bytes = data.as_slice();
+    let decoded_res = base64_decode_bytes(bytes);
+    match decoded_res {
+        Ok(decoded) => {
+            let len = decoded.len();
+            fs::write(target_path, decoded)?;
+            Ok(len)
+        }
+        Err(e) => {
+            Err(std::io::Error::new(ErrorKind::InvalidInput, "Padding error occurred."))
+        }
+    }
+    
 }
 
 pub fn base64_encode_bytes(bytes: &[u8]) -> Vec<u8> {
     let target_length = encode_calc_byte_size(bytes);
-    let mut res:Vec<u8> = vec![0; target_length];
+    let mut res: Vec<u8> = vec![0; target_length];
     let length = bytes.len();
     let mut position = 0;
     for i in 1..length {
@@ -41,14 +101,35 @@ pub fn base64_encode_bytes(bytes: &[u8]) -> Vec<u8> {
     if remaining > 0 {
         let mut remaining_bytes = vec![0; remaining];
         remaining_bytes[0..remaining].clone_from_slice(&bytes[length - remaining..length]);
-        let quartet = if remaining == 2 { encode_duo(&remaining_bytes) } else { encode_uno(&remaining_bytes)};
+        let quartet = if remaining == 2 { encode_duo(&remaining_bytes) } else { encode_uno(&remaining_bytes) };
         res[target_length - quartet.len()..target_length].clone_from_slice(&quartet);
     }
-    return res.clone();
+    res.clone()
+}
+
+pub fn base64_decode_bytes(bytes: &[u8]) -> Result<Vec<u8>, PaddingError> {
+    let target_length = decode_calc_byte_size(bytes);
+    let mut res = vec![0; target_length];
+    let source_length = bytes.len();
+    const CHUNK: usize = 4;
+    let modulo_max = CHUNK - 1;
+    let mut position = 0;
+    for i in 1..source_length - CHUNK {
+        if i % CHUNK == modulo_max {
+            let converted = convert_encoded_bytes(&bytes[i - modulo_max..i + 1]);
+            let decoded = decode_quartet(&converted);
+            res[position..position + 3].clone_from_slice(&decoded);
+            position += 3;
+        }
+    }
+    let converted = convert_encoded_bytes(&bytes[(source_length - CHUNK)..source_length]);
+    let decoded = decode_incomplete(&converted)?;
+    res[target_length - decoded.len()..target_length].clone_from_slice(&decoded[0..decoded.len()]);
+    Ok(res)
 }
 
 fn encode_calc_byte_size(bytes: &[u8]) -> usize {
-    let res = (((bytes.len() as f32 * 4. / 3.) / 4.).ceil() * 4.);
+    let res = ((bytes.len() as f32 * 4. / 3.) / 4.).ceil() * 4.;
     return res as usize;
 }
 
@@ -98,6 +179,40 @@ fn bytes_encode_trio(bytes: &[u8]) -> [usize; 4] {
     let third = k >> 6 | temp1;
     let fourth = k & 63;
     return [first as usize, second as usize, third as usize, fourth as usize];
+}
+
+fn decode_calc_byte_size(bytes: &[u8]) -> usize {
+    let real_length = bytes.iter().position(|&r| r == '=' as u8).unwrap_or(bytes.len());
+    (real_length as f32 * 3. / 4.).floor() as usize
+}
+
+fn convert_encoded_bytes(bytes: &[u8]) -> Vec<u8> {
+    bytes.iter().map(|x| CHARS_BASE_64_ENCODING[*x as usize]).collect()
+}
+
+fn decode_incomplete(bytes: &[u8]) -> Result<Vec<u8>, PaddingError> {
+    let mut quartet: [u8; 4] = [0; 4];
+    let pad_code = CHARS_BASE_64_ENCODING['=' as usize];
+    let pad_pos = bytes.iter().position(|&r| r == pad_code).unwrap_or(bytes.len());
+    quartet[0..pad_pos].clone_from_slice(&bytes[0..pad_pos]);
+    let temp = decode_quartet(&quartet);
+    match pad_pos {
+        4 => Ok(vec![temp[0], temp[1], temp[2]]),
+        3 => Ok(vec![temp[0], temp[1]]), // one =
+        2 => Ok(vec![temp[0]]), // two =
+        _ => Err(PaddingError {}) // something wrong
+    }
+}
+
+fn decode_quartet(bytes: &[u8]) -> [u8; 3] {
+    let i = bytes[0];
+    let j = bytes[1];
+    let k = bytes[2];
+    let l = bytes[3];
+    let first = (i << 2) | (j >> 4);
+    let second = (j << 4) | (k >> 2) & 0xff;
+    let third = ((k << 6) | l) & 0xff;
+    return [first as u8, second as u8, third as u8];
 }
 
 
@@ -152,5 +267,109 @@ mod tests {
             let res_str = str::from_utf8(&vec);
             assert_eq!(output[i], res_str.unwrap());
         }
+    }
+
+    #[test]
+    fn when_base64_encode_should_return_success() {
+        let res = base64_encode("free Command to Display the Amount of Physical and Swap Memory".to_string());
+        assert!(res.is_ok());
+        assert_eq!(res.unwrap(), "ZnJlZSBDb21tYW5kIHRvIERpc3BsYXkgdGhlIEFtb3VudCBvZiBQaHlzaWNhbCBhbmQgU3dhcCBNZW1vcnk=");
+    }
+
+    #[test]
+    fn when_decode_quartet_should_return_right_trio() {
+        let input: [u8; 4] = [19, 22, 5, 46];
+        let output = decode_quartet(&input);
+        assert_eq!(output.len(), 3);
+        assert_eq!(output[0], 77);
+        assert_eq!(output[1], 97);
+        assert_eq!(output[2], 110);
+    }
+
+    #[test]
+    fn when_decode_trio_should_decode() {
+        let raw_input: [u8; 4] = ['T' as u8, 'W' as u8, 'E' as u8, '=' as u8];
+        let converted = convert_encoded_bytes(&raw_input);
+        let bytes = converted.as_slice();
+        assert_eq!(19, bytes[0]);
+        assert_eq!(22, bytes[1]);
+        assert_eq!(4, bytes[2]);
+        let decoded = decode_incomplete(bytes);
+        assert!(decoded.is_ok());
+        let decoded_bytes = decoded.unwrap();
+        assert_eq!(2, decoded_bytes.len());
+        assert_eq!(77, decoded_bytes[0]);
+        assert_eq!(97, decoded_bytes[1]);
+    }
+
+    #[test]
+    fn when_decode_calc_byte_size_should_give_right_size() {
+        fn perform_test(expected: usize, str: &str) {
+            assert_eq!(expected, decode_calc_byte_size(str.as_bytes()));
+        }
+
+        perform_test(1, "TQ==");
+        perform_test(2, "TWE=");
+        perform_test(3, "TWFu");
+        perform_test(4, "Zm91cg=="); // four
+        perform_test(5, "dGhyZWU="); // three
+        perform_test(6, "dGhyZWVz"); // threes
+    }
+
+    #[test]
+    fn when_base64_decode_bytes_should_give_right_results() {
+        check_decode("TWFu", "Man");
+        check_decode("TWE=", "Ma");
+        check_decode("TQ==", "M");
+        check_decode("Zm91cg==", "four");
+        check_decode("dGhyZWU=", "three");
+        check_decode("dGhyZWVz", "threes");
+    }
+
+    fn check_decode(input: &str, expected: &str) {
+        let res = base64_decode_bytes(input.as_bytes());
+        assert!(res.is_ok());
+        let decoded = res.unwrap();
+        assert_eq!(expected.len(), decoded.len());
+        assert_eq!(expected, str::from_utf8(&decoded).unwrap());
+    }
+
+    #[test]
+    fn when_base64_decode_should_decode() {
+        let data = "VGhpcyBpcyBncmVhdCBzdHVmZg=="
+            .replace("+", "-").replace("/", "_");
+        println!("{}", data);
+        let res = base64_decode(data.to_string());
+        assert!(res.is_ok());
+        assert_eq!("This is great stuff", res.unwrap())
+    }
+
+    #[test]
+    fn when_base64_encode_should_base64_decode() {
+        for s in vec!["This is a nice text.", "Este é um texto super interessante!",
+                      "एक बहुत अच्छी रात और एक अच्छा कल", "一个非常美好的夜晚和明天美好的一天"] {
+            encode_decode_test(s);
+        }
+    }
+
+    fn encode_decode_test(str: &str) {
+        let encode_res = base64_encode(str.to_string());
+        assert!(encode_res.is_ok());
+        let encoded = encode_res.unwrap();
+        let decoded = base64_decode(encoded);
+        assert!(decoded.is_ok());
+        let final_str = decoded.unwrap();
+        assert_eq!(str, final_str);
+    }
+
+    #[test]
+    fn when_base64_encode_to_file_should_create_file() {
+        let sample_image = PathBuf::from("resources/sample_image.png");
+        let target_image = PathBuf::from("sample_image_base64.txt");
+        let res = base64_encode_to_file(sample_image, target_image);
+        assert!(res.is_ok());
+        let target_image_final = PathBuf::from("sample_image_base64.png");
+        base64_decode_from_file(PathBuf::from("sample_image_base64.txt"),
+                                target_image_final);
     }
 }
