@@ -1,6 +1,5 @@
 use std::fmt;
 use std::str::Utf8Error;
-use std::error::Error;
 
 #[derive(Debug)]
 pub struct PaddingError;

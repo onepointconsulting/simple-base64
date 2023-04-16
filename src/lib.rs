@@ -76,7 +76,7 @@ pub fn base64_decode_from_file(source_path: PathBuf, target_path: PathBuf) -> Re
             fs::write(target_path, decoded)?;
             Ok(len)
         }
-        Err(e) => {
+        Err(_) => {
             Err(std::io::Error::new(ErrorKind::InvalidInput, "Padding error occurred."))
         }
     }
@@ -261,7 +261,7 @@ mod tests {
     fn when_base64_encode_bytes_should_produce_right_vector() {
         let input: Vec<&[u8]> = vec!["Man", "Assuming", "Olá! isto é um teste", "你好，这是一个测试"]
             .iter().map(|x| x.as_bytes()).collect();
-        let output: Vec<&str> = vec!["TWFu", "QXNzdW1pbmc=", "T2zDoSEgaXN0byDDqSB1bSB0ZXN0ZQ==", "5L2g5aW977yM6L-Z5piv5LiA5Liq5rWL6K-V"];
+        let output: Vec<&str> = vec!["TWFu", "QXNzdW1pbmc=", "T2zDoSEgaXN0byDDqSB1bSB0ZXN0ZQ==", "5L2g5aW977yM6L+Z5piv5LiA5Liq5rWL6K+V"];
         for (i, bytes) in input.iter().enumerate() {
             let vec = base64_encode_bytes(bytes);
             let res_str = str::from_utf8(&vec);
