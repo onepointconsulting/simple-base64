@@ -10,7 +10,6 @@ impl fmt::Display for PaddingError {
     }
 }
 
-
 #[derive(Debug, Clone)]
 pub struct Base64Error {
     pub msg: String,
@@ -21,4 +20,10 @@ impl fmt::Display for Base64Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{}", self.msg)
     }
+}
+
+#[derive(PartialEq)]
+pub enum Flavour {
+    Base64Standard,
+    Base64Url
 }

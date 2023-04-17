@@ -3,8 +3,9 @@ use std::io::{Error, ErrorKind};
 use std::path::PathBuf;
 use std::str::Utf8Error;
 
-use crate::constants::{BASE_64_ENCODING_CHARS, CHARS_BASE_64_ENCODING, PADDING_CHAR};
-use crate::errors::{Base64Error, PaddingError};
+use crate::constants::{BASE_64_ENCODING_CHARS, BASE_64_ENCODING_CHARS_URL, CHARS_BASE_64_ENCODING, CHARS_BASE_64_ENCODING_URL, PADDING_CHAR};
+use crate::errors::{Base64Error, Flavour, PaddingError};
+use crate::Flavour::{Base64Standard, Base64Url};
 
 mod constants;
 mod errors;
@@ -23,16 +24,24 @@ mod errors;
  * Encoded Data. Line feeds may be added using {@link #withSeparator(String, int)}.
  */
 
-pub fn base64_encode(str: String) -> Result<String, Utf8Error> {
+pub fn base64_encode_standard(str: String) -> Result<String, Utf8Error> {
+    base64_encode(str, &Base64Standard)
+}
+
+pub fn base64_encode_url(str: String) -> Result<String, Utf8Error> {
+    base64_encode(str, &Base64Url)
+}
+
+pub fn base64_encode(str: String, flavour: &Flavour) -> Result<String, Utf8Error> {
     let bytes = str.as_bytes();
-    let vec = base64_encode_bytes(bytes);
+    let vec = base64_encode_bytes(bytes, flavour);
     let res = str::from_utf8(&vec)?;
     return Ok(res.to_string());
 }
 
-pub fn base64_decode(str: String) -> Result<String, Base64Error> {
+pub fn base64_decode(str: String, flavour: &Flavour) -> Result<String, Base64Error> {
     let bytes = str.as_bytes();
-    let decoded_result = base64_decode_bytes(bytes);
+    let decoded_result = base64_decode_bytes(bytes, flavour);
     match decoded_result {
         Ok(decoded) => {
             match str::from_utf8(&decoded) {
@@ -48,28 +57,44 @@ pub fn base64_decode(str: String) -> Result<String, Base64Error> {
     }
 }
 
-pub fn base64_encode_file_str(path_str: &str) -> Result<Vec<u8>, Error> {
-    let path = PathBuf::from(path_str);
-    base64_encode_file(path)
+pub fn base64_encode_file_str_standard(path_str: &str) -> Result<Vec<u8>, Error> {
+    return base64_encode_file_str(path_str, &Base64Standard)
 }
 
-pub fn base64_encode_file(path: PathBuf) -> Result<Vec<u8>, Error> {
+pub fn base64_encode_file_str_url(path_str: &str) -> Result<Vec<u8>, Error> {
+    return base64_encode_file_str(path_str, &Base64Url)
+}
+
+pub fn base64_encode_file_str(path_str: &str, flavour: &Flavour) -> Result<Vec<u8>, Error> {
+    let path = PathBuf::from(path_str);
+    base64_encode_file(path, flavour)
+}
+
+pub fn base64_encode_file(path: PathBuf, flavour: &Flavour) -> Result<Vec<u8>, Error> {
     let data = fs::read(path)?;
-    let encoded = base64_encode_bytes(&data);
+    let encoded = base64_encode_bytes(&data, flavour);
     Ok(encoded)
 }
 
-pub fn base64_encode_to_file(path: PathBuf, target_path: PathBuf) -> Result<usize, Error> {
-    let res = base64_encode_file(path)?;
+pub fn base64_encode_to_file(path: PathBuf, target_path: PathBuf, flavour: &Flavour) -> Result<usize, Error> {
+    let res = base64_encode_file(path, flavour)?;
     let len = res.len();
     fs::write(target_path, res)?;
     Ok(len)
 }
 
-pub fn base64_decode_from_file(source_path: PathBuf, target_path: PathBuf) -> Result<usize, Error> {
+pub fn base64_decode_from_file_standard(source_path: PathBuf, target_path: PathBuf) -> Result<usize, Error> {
+    base64_decode_from_file(source_path, target_path, &Base64Standard)
+}
+
+pub fn base64_decode_from_file_url(source_path: PathBuf, target_path: PathBuf) -> Result<usize, Error> {
+    base64_decode_from_file(source_path, target_path, &Base64Url)
+}
+
+pub fn base64_decode_from_file(source_path: PathBuf, target_path: PathBuf, flavour: &Flavour) -> Result<usize, Error> {
     let data = fs::read(source_path)?;
     let bytes = data.as_slice();
-    let decoded_res = base64_decode_bytes(bytes);
+    let decoded_res = base64_decode_bytes(bytes, flavour);
     match decoded_res {
         Ok(decoded) => {
             let len = decoded.len();
@@ -77,13 +102,20 @@ pub fn base64_decode_from_file(source_path: PathBuf, target_path: PathBuf) -> Re
             Ok(len)
         }
         Err(_) => {
-            Err(std::io::Error::new(ErrorKind::InvalidInput, "Padding error occurred."))
+            Err(Error::new(ErrorKind::InvalidInput, "Padding error occurred."))
         }
     }
-    
 }
 
-pub fn base64_encode_bytes(bytes: &[u8]) -> Vec<u8> {
+pub fn base64_encode_bytes_standard(bytes: &[u8]) -> Vec<u8> {
+    base64_encode_bytes(bytes, &Base64Standard)
+}
+
+pub fn base64_encode_bytes_url(bytes: &[u8]) -> Vec<u8> {
+    base64_encode_bytes(bytes, &Base64Url)
+}
+
+pub fn base64_encode_bytes(bytes: &[u8], flavour: &Flavour) -> Vec<u8> {
     let target_length = encode_calc_byte_size(bytes);
     let mut res: Vec<u8> = vec![0; target_length];
     let length = bytes.len();
@@ -92,7 +124,7 @@ pub fn base64_encode_bytes(bytes: &[u8]) -> Vec<u8> {
         if i % 3 == 2 {
             let mut trio = [0; 3];
             trio[..3].clone_from_slice(&bytes[i - 2..i + 1]);
-            let quartet = encode_trio(&trio);
+            let quartet = encode_trio(&trio, flavour);
             res[position..position + 4].clone_from_slice(&quartet);
             position += 4;
         }
@@ -101,13 +133,22 @@ pub fn base64_encode_bytes(bytes: &[u8]) -> Vec<u8> {
     if remaining > 0 {
         let mut remaining_bytes = vec![0; remaining];
         remaining_bytes[0..remaining].clone_from_slice(&bytes[length - remaining..length]);
-        let quartet = if remaining == 2 { encode_duo(&remaining_bytes) } else { encode_uno(&remaining_bytes) };
+        let quartet = if remaining == 2 { encode_duo(&remaining_bytes, flavour) }
+            else { encode_uno(&remaining_bytes, flavour) };
         res[target_length - quartet.len()..target_length].clone_from_slice(&quartet);
     }
     res.clone()
 }
 
-pub fn base64_decode_bytes(bytes: &[u8]) -> Result<Vec<u8>, PaddingError> {
+pub fn base64_decode_bytes_standard(bytes: &[u8]) -> Result<Vec<u8>, PaddingError> {
+    base64_decode_bytes(bytes, &Base64Standard)
+}
+
+pub fn base64_decode_bytes_url(bytes: &[u8]) -> Result<Vec<u8>, PaddingError> {
+    base64_decode_bytes(bytes, &Base64Url)
+}
+
+pub fn base64_decode_bytes(bytes: &[u8], flavour: &Flavour) -> Result<Vec<u8>, PaddingError> {
     let target_length = decode_calc_byte_size(bytes);
     let mut res = vec![0; target_length];
     let source_length = bytes.len();
@@ -116,13 +157,13 @@ pub fn base64_decode_bytes(bytes: &[u8]) -> Result<Vec<u8>, PaddingError> {
     let mut position = 0;
     for i in 1..source_length - CHUNK {
         if i % CHUNK == modulo_max {
-            let converted = convert_encoded_bytes(&bytes[i - modulo_max..i + 1]);
+            let converted = convert_encoded_bytes(&bytes[i - modulo_max..i + 1], flavour);
             let decoded = decode_quartet(&converted);
             res[position..position + 3].clone_from_slice(&decoded);
             position += 3;
         }
     }
-    let converted = convert_encoded_bytes(&bytes[(source_length - CHUNK)..source_length]);
+    let converted = convert_encoded_bytes(&bytes[(source_length - CHUNK)..source_length], flavour);
     let decoded = decode_incomplete(&converted)?;
     res[target_length - decoded.len()..target_length].clone_from_slice(&decoded[0..decoded.len()]);
     Ok(res)
@@ -133,39 +174,47 @@ fn encode_calc_byte_size(bytes: &[u8]) -> usize {
     return res as usize;
 }
 
-fn encode_trio(bytes: &[u8]) -> [u8; 4] {
+fn encode_trio(bytes: &[u8], flavour: &Flavour) -> [u8; 4] {
     assert_eq!(bytes.len(), 3);
     let quartet = bytes_encode_trio(bytes);
+    let table = choose_encoding_table(flavour);
     return [
-        BASE_64_ENCODING_CHARS[quartet[0]],
-        BASE_64_ENCODING_CHARS[quartet[1]],
-        BASE_64_ENCODING_CHARS[quartet[2]],
-        BASE_64_ENCODING_CHARS[quartet[3]]
+        table[quartet[0]],
+        table[quartet[1]],
+        table[quartet[2]],
+        table[quartet[3]]
     ];
 }
 
-fn encode_duo(bytes: &[u8]) -> [u8; 4] {
+fn encode_duo(bytes: &[u8], flavour: &Flavour) -> [u8; 4] {
     assert_eq!(bytes.len(), 2);
     let trio = [bytes[0], bytes[1], 63];
     let quartet = bytes_encode_trio(&trio);
+    let table = choose_encoding_table(flavour);
     return [
-        BASE_64_ENCODING_CHARS[quartet[0]],
-        BASE_64_ENCODING_CHARS[quartet[1]],
-        BASE_64_ENCODING_CHARS[quartet[2]],
+        table[quartet[0]],
+        table[quartet[1]],
+        table[quartet[2]],
         PADDING_CHAR
     ];
 }
 
-fn encode_uno(bytes: &[u8]) -> [u8; 4] {
+fn encode_uno(bytes: &[u8], flavour: &Flavour) -> [u8; 4] {
     assert_eq!(bytes.len(), 1);
     let trio = [bytes[0], 15, 255];
     let quartet = bytes_encode_trio(&trio);
+    let table = choose_encoding_table(flavour);
     return [
-        BASE_64_ENCODING_CHARS[quartet[0]],
-        BASE_64_ENCODING_CHARS[quartet[1]],
+        table[quartet[0]],
+        table[quartet[1]],
         PADDING_CHAR,
         PADDING_CHAR
     ];
+}
+
+fn choose_encoding_table(flavour: &Flavour) -> &'static [u8] {
+    let table = if *flavour == Base64Standard { BASE_64_ENCODING_CHARS } else { BASE_64_ENCODING_CHARS_URL };
+    table
 }
 
 fn bytes_encode_trio(bytes: &[u8]) -> [usize; 4] {
@@ -186,8 +235,9 @@ fn decode_calc_byte_size(bytes: &[u8]) -> usize {
     (real_length as f32 * 3. / 4.).floor() as usize
 }
 
-fn convert_encoded_bytes(bytes: &[u8]) -> Vec<u8> {
-    bytes.iter().map(|x| CHARS_BASE_64_ENCODING[*x as usize]).collect()
+fn convert_encoded_bytes(bytes: &[u8], flavour: &Flavour) -> Vec<u8> {
+    let table = if *flavour == Base64Standard { CHARS_BASE_64_ENCODING.to_vec() } else { CHARS_BASE_64_ENCODING_URL.to_vec() };
+    bytes.iter().map(|x| table[*x as usize]).collect()
 }
 
 fn decode_incomplete(bytes: &[u8]) -> Result<Vec<u8>, PaddingError> {
@@ -223,15 +273,15 @@ mod tests {
     #[test]
     fn when_encode_should_produce_right_results() {
         let bytes = "Man".as_bytes();
-        let quartet = encode_trio(bytes);
+        let quartet = encode_trio(bytes, &Base64Standard);
         convert_to_str_check(&quartet, "TWFu");
 
         let duo = "Ma".as_bytes();
-        let quartet_duo = encode_duo(duo);
+        let quartet_duo = encode_duo(duo, &Base64Standard);
         convert_to_str_check(&quartet_duo, "TWE=");
 
         let uno = "M".as_bytes();
-        let quartet_uno = encode_uno(uno);
+        let quartet_uno = encode_uno(uno, &Base64Standard);
         convert_to_str_check(&quartet_uno, "TQ==");
     }
 
@@ -263,7 +313,7 @@ mod tests {
             .iter().map(|x| x.as_bytes()).collect();
         let output: Vec<&str> = vec!["TWFu", "QXNzdW1pbmc=", "T2zDoSEgaXN0byDDqSB1bSB0ZXN0ZQ==", "5L2g5aW977yM6L+Z5piv5LiA5Liq5rWL6K+V"];
         for (i, bytes) in input.iter().enumerate() {
-            let vec = base64_encode_bytes(bytes);
+            let vec = base64_encode_bytes(bytes, &Base64Standard);
             let res_str = str::from_utf8(&vec);
             assert_eq!(output[i], res_str.unwrap());
         }
@@ -271,7 +321,8 @@ mod tests {
 
     #[test]
     fn when_base64_encode_should_return_success() {
-        let res = base64_encode("free Command to Display the Amount of Physical and Swap Memory".to_string());
+        let res = base64_encode("free Command to Display the Amount of Physical and Swap Memory".to_string()
+                                , &Base64Standard);
         assert!(res.is_ok());
         assert_eq!(res.unwrap(), "ZnJlZSBDb21tYW5kIHRvIERpc3BsYXkgdGhlIEFtb3VudCBvZiBQaHlzaWNhbCBhbmQgU3dhcCBNZW1vcnk=");
     }
@@ -289,7 +340,7 @@ mod tests {
     #[test]
     fn when_decode_trio_should_decode() {
         let raw_input: [u8; 4] = ['T' as u8, 'W' as u8, 'E' as u8, '=' as u8];
-        let converted = convert_encoded_bytes(&raw_input);
+        let converted = convert_encoded_bytes(&raw_input, &Base64Standard);
         let bytes = converted.as_slice();
         assert_eq!(19, bytes[0]);
         assert_eq!(22, bytes[1]);
@@ -327,7 +378,7 @@ mod tests {
     }
 
     fn check_decode(input: &str, expected: &str) {
-        let res = base64_decode_bytes(input.as_bytes());
+        let res = base64_decode_bytes(input.as_bytes(), &Base64Standard);
         assert!(res.is_ok());
         let decoded = res.unwrap();
         assert_eq!(expected.len(), decoded.len());
@@ -339,7 +390,7 @@ mod tests {
         let data = "VGhpcyBpcyBncmVhdCBzdHVmZg=="
             .replace("+", "-").replace("/", "_");
         println!("{}", data);
-        let res = base64_decode(data.to_string());
+        let res = base64_decode(data.to_string(), &Base64Standard);
         assert!(res.is_ok());
         assert_eq!("This is great stuff", res.unwrap())
     }
@@ -353,10 +404,10 @@ mod tests {
     }
 
     fn encode_decode_test(str: &str) {
-        let encode_res = base64_encode(str.to_string());
+        let encode_res = base64_encode(str.to_string(), &Base64Standard);
         assert!(encode_res.is_ok());
         let encoded = encode_res.unwrap();
-        let decoded = base64_decode(encoded);
+        let decoded = base64_decode(encoded, &Base64Standard);
         assert!(decoded.is_ok());
         let final_str = decoded.unwrap();
         assert_eq!(str, final_str);
@@ -366,10 +417,11 @@ mod tests {
     fn when_base64_encode_to_file_should_create_file() {
         let sample_image = PathBuf::from("resources/sample_image.png");
         let target_image = PathBuf::from("sample_image_base64.txt");
-        let res = base64_encode_to_file(sample_image, target_image);
+        let res = base64_encode_to_file(sample_image, target_image, &Base64Standard);
         assert!(res.is_ok());
         let target_image_final = PathBuf::from("sample_image_base64.png");
-        base64_decode_from_file(PathBuf::from("sample_image_base64.txt"),
-                                target_image_final);
+        let res = base64_decode_from_file(PathBuf::from("sample_image_base64.txt"),
+                                target_image_final, &Base64Standard);
+        assert!(res.is_ok());
     }
 }
